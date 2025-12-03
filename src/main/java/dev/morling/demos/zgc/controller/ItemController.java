@@ -1,7 +1,6 @@
 package dev.morling.demos.zgc.controller;
 
 import dev.morling.demos.zgc.service.ItemService;
-import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -14,15 +13,20 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/api")
-@RequiredArgsConstructor
 public class ItemController {
 
     private final ItemService itemService;
 
+    // ---------------------------------------------------------
+    // IMPORTANT: This constructor is required to initialize the final field
+    // ---------------------------------------------------------
+    public ItemController(ItemService itemService) {
+        this.itemService = itemService;
+    }
+
     /**
      * Main benchmark endpoint - returns random items from database.
      * This is the primary endpoint used in Gunnar's original benchmark.
-     * 
      * @param count Number of random items to return (default: 10)
      */
     @GetMapping("/random")
@@ -52,7 +56,6 @@ public class ItemController {
     /**
      * Compute endpoint - generates garbage without database access.
      * Useful for isolating GC behavior from database latency.
-     * 
      * @param iterations Number of iterations for computation (default: 1000)
      */
     @GetMapping("/compute")
@@ -67,14 +70,13 @@ public class ItemController {
     @GetMapping("/health")
     public ResponseEntity<Map<String, String>> health() {
         return ResponseEntity.ok(Map.of(
-            "status", "UP",
-            "timestamp", String.valueOf(System.currentTimeMillis())
+                "status", "UP",
+                "timestamp", String.valueOf(System.currentTimeMillis())
         ));
     }
 
     /**
      * Initialize sample data (call once before benchmarking).
-     * 
      * @param count Number of items to create (default: 1000)
      */
     @PostMapping("/init")
@@ -82,8 +84,8 @@ public class ItemController {
             @RequestParam(defaultValue = "1000") int count) {
         itemService.initializeSampleData(count);
         return ResponseEntity.ok(Map.of(
-            "status", "initialized",
-            "count", String.valueOf(count)
+                "status", "initialized",
+                "count", String.valueOf(count)
         ));
     }
 }
