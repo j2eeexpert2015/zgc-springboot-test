@@ -9,7 +9,7 @@ Based on the blog post: [Lower Java Tail Latencies With ZGC](https://www.morling
 - Java 21+ (for Generational ZGC support)
 - Docker & Docker Compose
 - Maven 3.8+
-- (Optional) Apache JMeter 5.6+ for load testing
+- Apache JMeter 5.6+
 
 ## Quick Start
 
@@ -22,69 +22,116 @@ docker compose up -d
 ### 2. Build the Application
 
 ```bash
-./mvnw clean package -Dquick
+mvn clean package -DskipTests
 ```
 
-### 3. Run a Benchmark
+### 3. Initialize Sample Data
+
+After starting the app (see below), run once:
+```bash
+curl -X POST "http://localhost:8080/api/init?count=1000"
+```
+
+---
+
+## Manual GC Comparison with JMeter
+
+### Step 1: Create JMeter Test Plan
+
+1. Open JMeter
+2. Right-click **Test Plan** → Add → Threads → **Thread Group**
+    - Number of Threads: `200`
+    - Ramp-up period: `30`
+    - Loop Count: check **Infinite**
+    - Check **Specify Thread lifetime**
+    - Duration: `150`
+
+3. Right-click **Thread Group** → Add → Sampler → **HTTP Request**
+    - Server Name: `localhost`
+    - Port: `8080`
+    - Method: `GET`
+    - Path: `/api/random?count=10`
+
+4. Right-click **Thread Group** → Add → Listener → **Summary Report**
+
+5. Right-click **Thread Group** → Add → Listener → **Aggregate Report**
+
+6. File → Save As → `zgc-load-test.jmx`
+
+---
+
+### Step 2: Test G1GC
+
+**Terminal 1 - Start app with G1GC + JFR:**
+```bash
+java -Xms2g -Xmx2g -XX:+UseG1GC -XX:+AlwaysPreTouch -XX:StartFlightRecording=filename=g1gc.jfr,dumponexit=true,settings=profile -jar target/zgc-springboot-test-1.0.0-SNAPSHOT.jar
+```
+
+**Terminal 2 - Initialize data (first time only):**
+```bash
+curl -X POST "http://localhost:8080/api/init?count=1000"
+```
+
+**Run JMeter:**
+- Open your test plan
+- Click Start (green play button)
+- Wait for test to complete
+- Note down results from Summary Report
+
+**Stop app:** Press `Ctrl+C` (JFR saves automatically)
+
+---
+
+### Step 3: Test Generational ZGC
+
+**Terminal 1 - Start app with ZGC + JFR:**
+```bash
+java -Xms2g -Xmx2g -XX:+UseZGC -XX:+ZGenerational -XX:+AlwaysPreTouch -XX:StartFlightRecording=filename=zgc.jfr,dumponexit=true,settings=profile -jar target/zgc-springboot-test-1.0.0-SNAPSHOT.jar
+```
+
+**Terminal 2 - Initialize data:**
+```bash
+curl -X POST "http://localhost:8080/api/init?count=1000"
+```
+
+**Run JMeter:**
+- Click Start
+- Wait for test to complete
+- Note down results
+
+**Stop app:** Press `Ctrl+C`
+
+---
+
+### Step 4: Compare Results
+
+| Metric | G1GC | ZGC |
+|--------|------|-----|
+| Avg    |      |     |
+| p95    |      |     |
+| p99    |      |     |
+| Max    |      |     |
+
+---
+
+### Step 5: Analyze JFR in JDK Mission Control
 
 ```bash
-# Run with G1GC (default)
-./bench.sh --duration 120 --qps 1000 --gc G1
-
-# Run with ZGC
-./bench.sh --duration 120 --qps 1000 --gc ZGC
-
-# Run with Generational ZGC (Java 21+)
-./bench.sh --duration 120 --qps 1000 --gc GenZGC
+jmc
 ```
 
-### 4. Run Full Comparison
+- File → Open → `g1gc.jfr`
+- File → Open → `zgc.jfr`
 
-```bash
-./run-comparison.sh --duration 120 --qps 1000
-```
+**What to look for:**
 
-This will run benchmarks with all three GCs and generate a comparison report.
+| Recording | Where to Look | Expected |
+|-----------|---------------|----------|
+| G1GC | Garbage Collections → Pause Durations | 10-50ms pauses |
+| ZGC | Garbage Collections → Pause Durations | Sub-millisecond pauses |
+| ZGC | Event Browser → search "ZAllocationStall" | Should be zero (if not, system is CPU-bound) |
 
-## Project Structure
-
-```
-zgc-springboot-test/
-├── src/
-│   └── main/
-│       ├── java/dev/morling/demos/zgc/
-│       │   ├── ZgcTestApplication.java    # Spring Boot main class
-│       │   ├── controller/
-│       │   │   └── ItemController.java    # REST endpoints
-│       │   ├── service/
-│       │   │   └── ItemService.java       # Business logic with garbage generation
-│       │   ├── entity/
-│       │   │   └── Item.java              # JPA entity
-│       │   └── repository/
-│       │       └── ItemRepository.java    # Data access
-│       └── resources/
-│           └── application.properties     # Configuration
-├── jmeter/
-│   └── zgc-benchmark.jmx                  # JMeter test plan
-├── docker-compose.yml                     # PostgreSQL setup
-├── bench.sh                               # Main benchmark script
-├── run-comparison.sh                      # Compare all GCs
-└── pom.xml
-```
-
-## Benchmark Options
-
-```bash
-./bench.sh [OPTIONS]
-
-Options:
-  --duration SEC    Test duration in seconds (default: 120)
-  --bench TYPE      Benchmark type: random, compute (default: random)
-  --mem MB          Heap memory in MB (default: 4096)
-  --qps NUM         Requests per second (default: 1000)
-  --gc TYPE         GC type: G1, ZGC, GenZGC (default: G1)
-  --warmup SEC      Warmup period in seconds (default: 30)
-```
+---
 
 ## API Endpoints
 
@@ -97,105 +144,67 @@ Options:
 | `/api/health` | GET | Health check |
 | `/api/init?count=N` | POST | Initialize sample data |
 
-## Understanding the Results
-
-### What to Look For
-
-1. **P99 and P99.9 Latencies**: ZGC should show significantly lower tail latencies compared to G1GC.
-
-2. **GC Pause Times**: Open the JFR recording in JDK Mission Control to see actual GC pause durations.
-
-3. **Allocation Stalls**: In CPU-bound scenarios, ZGC may show `ZAllocationStall` events.
-
-### Analyzing JFR Recordings
-
-```bash
-# Print GC pause events
-jfr print --events jdk.GCPhasePause results/*/recording.jfr
-
-# Print ZGC allocation stalls
-jfr print --events jdk.ZAllocationStall results/*/recording.jfr
-
-# Summarize GC events
-jfr summary results/*/recording.jfr
-```
-
-Or open `recording.jfr` in **JDK Mission Control** for visual analysis.
-
-## Using JMeter
-
-If you have JMeter installed:
-
-```bash
-export JMETER_HOME=/path/to/jmeter
-
-# Run via bench.sh (auto-detects JMeter)
-./bench.sh --gc ZGC --qps 1000
-
-# Or run JMeter directly
-$JMETER_HOME/bin/jmeter -n \
-    -t jmeter/zgc-benchmark.jmx \
-    -JDURATION=120 \
-    -JQPS=1000 \
-    -l results.jtl \
-    -e -o report/
-```
+---
 
 ## Expected Results
 
-Based on Gunnar Morling's findings, you should see:
+Based on Gunnar Morling's findings:
 
-| Metric | G1GC | ZGC | Improvement |
-|--------|------|-----|-------------|
-| P50 | Similar | Similar | - |
-| P99 | Similar | Similar | - |
-| P99.9 | High | **Much Lower** | ✅ Significant |
-| P99.99 | Very High | **Very Low** | ✅ Dramatic |
-| Max GC Pause | ~20-50ms | ~50μs | 400-1000x |
+| Metric | G1GC | ZGC | Notes |
+|--------|------|-----|-------|
+| p50 | Similar | Similar | No difference at median |
+| p95 | Similar | Similar | Still comparable |
+| p99 | Higher | **Lower** | ZGC advantage starts here |
+| p99.9 | High | **Much Lower** | Significant improvement |
+| Max | Very High | **Low** | Dramatic difference |
+| GC Pause | 10-50ms | ~50μs | 400-1000x improvement |
 
-### When ZGC Might NOT Help
+---
+
+## JFR Analysis Commands
+
+```bash
+# Print GC pause events
+jfr print --events jdk.GCPhasePause g1gc.jfr
+
+# Print ZGC allocation stalls
+jfr print --events jdk.ZAllocationStall zgc.jfr
+
+# Summary
+jfr summary g1gc.jfr
+```
+
+---
+
+## When ZGC Might NOT Help
 
 - **CPU-bound workloads**: ZGC needs CPU headroom for concurrent GC threads
 - **Very high allocation rates**: May cause allocation stalls
 - **Small heaps**: ZGC overhead may not be worth it
 
-## Comparison with Original zgc-test
-
-| Feature | Original (Quarkus) | This (Spring Boot) |
-|---------|-------------------|-------------------|
-| Framework | Quarkus | Spring Boot 3.2 |
-| Load Tool | Vegeta | JMeter / curl |
-| JFR Support | ✅ | ✅ |
-| Database | PostgreSQL | PostgreSQL |
-| GC Options | G1, ZGC | G1, ZGC, GenZGC |
+---
 
 ## Troubleshooting
 
 ### Application won't start
 ```bash
-# Check if Postgres is running
 docker compose ps
-
-# View application logs
-cat results/*/app.log
+docker compose logs postgres
 ```
 
-### High allocation stall count (ZGC)
-- Increase heap size: `--mem 8192`
-- Reduce QPS: `--qps 500`
-- This indicates CPU-bound scenario where G1 may actually perform better
+### 404 on endpoints
+- Check package structure matches `dev.morling.demos.zgc`
+- Ensure you ran `curl -X POST "http://localhost:8080/api/init?count=1000"`
 
-### JMeter not found
-- Install JMeter and set `JMETER_HOME`
-- Or use the built-in curl-based load generator (automatic fallback)
+### No visible GC differences
+- Reduce heap: `-Xms1g -Xmx1g`
+- Increase load in JMeter (more threads or longer duration)
+
+---
 
 ## References
 
-- [Lower Java Tail Latencies With ZGC](https://www.morling.dev/blog/lower-java-tail-latencies-with-zgc/) - Original blog post
+- [Lower Java Tail Latencies With ZGC](https://www.morling.dev/blog/lower-java-tail-latencies-with-zgc/)
 - [Original zgc-test repo](https://github.com/gunnarmorling/zgc-test)
 - [ZGC Wiki](https://wiki.openjdk.org/display/zgc)
 - [JEP 439: Generational ZGC](https://openjdk.org/jeps/439)
-
-## License
-
-Apache License 2.0
